@@ -1,0 +1,525 @@
+#!/bin/bash
+# GE research protocols, SSH keys and gesyslog save/load automations script, created by Max Botev. 
+# Added research and protocols directory size vs USB free space check
+# Added small utilities
+# Ver 1.02
+
+
+mounted_already()
+{
+mounted="/mnt/usb is a mountpoint"
+checkmounted=$(mountpoint /mnt/usb)
+
+if [ "$checkmounted" != "$mounted" ]; then
+# /mnt/usb was not mounted
+return 1
+else
+# /mnt/usb is mounted
+return 0
+fi
+}
+
+mount_usb()
+{
+
+# Try to mount USB drive
+# first check if it's mounted already
+
+
+#usbplugged=$(lsblk | grep "sd[b-z]1")
+#usb=$(ls /dev/sd[b-z]1 >/dev/null)
+er=""
+
+mounted_already
+if [ $? == 0 ]; then
+
+printf "${RED}/mnt/usb was already mounted${NC}
+" >&2
+exit
+else
+# /mnt/usb is not mounted, try to find USB and mount it 
+
+FoundDisks=$(lsblk | grep "sd[b-z][1-9]") 
+
+if [ -n "$FoundDisks" ]; then
+printf "Found following devices: $BLUE
+$FoundDisks $NC
+" >&2
+
+echo -n "Please enter device name you want to mount to /mnt/usb (i.e. sdc1): " >&2
+read UserSelectedUSB
+
+if [ -n "$UserSelectedUSB" ]; then
+
+usb=$(ls /dev/$UserSelectedUSB) 
+printf "Mounting $RED$usb$NC
+" >&2
+mount $usb /mnt/usb
+
+if [ $? -eq 0 ]; then
+
+echo Done >&2
+
+
+else
+
+echo Something went wrong >&2
+fi
+
+# add checks for successful mount
+fi
+else
+exit
+fi
+
+fi
+
+exit
+
+}
+
+unmount_usb()
+{
+# Try to unmount USB drive
+echo "Unmounting USB drive..." >&2
+
+umount -l /mnt/usb
+
+if [ $? -eq 0 ]; then
+
+echo Done unmounting>&2
+
+
+fi
+
+}
+
+copy_ge_logs()
+{
+
+mounted_already
+if [ $? != 0 ]; then
+
+printf "${RED}/mnt/usb was not mounted yet. You need to mount USB drive first.${NC}
+" >&2
+exit
+else
+
+rsync -avP --no-o --no-g /usr/g/service/log/gesys* /mnt/usb/ >&2
+
+if [ $? -eq 0 ]; then
+
+echo Done. Do not forget to unmount USB before removal >&2
+else
+echo Something went wrong >&2
+fi
+
+fi
+
+}
+
+
+backup_research_links()
+{
+mounted_already
+if [ $? != 0 ]; then
+
+printf "${RED}/mnt/usb was not mounted yet.You need to mount USB drive first.${NC}
+" >&2
+exit
+else
+
+mkdir -p /mnt/usb/ResearchINFO/
+mkdir -p /mnt/usb/ResearchINFO/$GESYSTEMID
+
+#normal rsync way doesn't work here due to USB's FAT file system limitations
+
+# need to fix permissions when restoring!!! 
+find /usr/g/bin/ -lname '/usr/g/research*' -exec tar cvzf /mnt/usb/ResearchINFO/$GESYSTEMID/researchlinks.tar.gz {} + >&2
+
+fi
+}
+
+
+backup_research()
+{
+mounted_already
+if [ $? != 0 ]; then
+
+printf "${RED}/mnt/usb was not mounted yet.You need to mount USB drive first.${NC}
+" >&2
+exit
+else
+
+# check for research directory size and free space on USB
+CheckResearchSize="`du -sm /usr/g/research | cut -f1`"
+CheckRawSize="`du -sm /usr/g/research/mrraw | cut -f1`"
+ResearchToBackupSize=$((CheckResearchSize-CheckRawSize))
+USBFreeSpace="`df /mnt/usb | awk '{ print $4 }' | tail -n 1`"
+USBFreePercents="`df /mnt/usb | awk '{ print $5 }' | tail -n 1`"
+USBFreeInMB=$((USBFreeSpace/1024))
+
+printf "$BLUE Research direcory size:                     $RED$CheckResearchSize Mbytes $BLUE
+ Raw files directory size (will be skipped): $RED$CheckRawSize Mbytes $BLUE
+ Total size of research files to backup:     $RED$ResearchToBackupSize Mbytes $BLUE
+ Free space on USB drive:                    $RED$USBFreeInMB Mbytes free, %s used
+$NC
+" "$USBFreePercents" >&2
+
+if [ $ResearchToBackupSize -gt $USBFreeInMB ]; then
+
+printf "$RED Not enough space on USB to backup the research PSDs. Backup failed. $NC
+" >&2
+exit
+
+else
+ 
+printf "Proceed with backup?(y/n):" >&2
+read UserSelectBackup
+
+if [ $UserSelectBackup == 'y' ]; then
+
+
+mkdir -p /mnt/usb/ResearchINFO/
+mkdir -p /mnt/usb/ResearchINFO/$GESYSTEMID
+
+# Rsync research files
+
+rsync -avP --no-o --no-g /usr/g/research /mnt/usb/researchINFO/$GESYSTEMID/ --exclude=mrraw >&2
+#find /usr/g/bin/ -lname '/usr/g/research*' -exec rsync -avP {} /mnt/usb/researchINFO/$GESYSTEMID/bin/ \; >&2
+
+#normal rsync way doesn't work here due to USB's FAT file system limitations
+
+# need to fix permissions when restoring!!! 
+#find /usr/g/bin/ -lname '/usr/g/research*' -exec tar cvzf /mnt/usb/ResearchINFO/$GESYSTEMID/#researchlinks.tar.gz {} + >&2
+
+fi
+fi
+fi
+}
+
+
+restore_research_links()
+{
+
+
+mounted_already
+if [ $? != 0 ]; then
+
+printf "${RED}/mnt/usb was not mounted yet. You need to mount USB drive first.${NC}
+" >&2
+exit
+else
+
+ 
+ cd / >&2
+ tar xvzf /mnt/usb/ResearchINFO/$GESYSTEMID/researchlinks.tar.gz >&2
+ chown sdc:informix /usr/g/research -R >&2
+# add fix permissions in /usr/g/bin
+ find /usr/g/bin/ -lname '/usr/g/research*' -exec chown sdc:informix {} \; >&2
+ find /usr/g/bin/ -lname '/usr/g/research*' -exec chown -h sdc:informix {} \; >&2
+fi
+
+}
+
+restore_research()
+{
+
+
+mounted_already
+if [ $? != 0 ]; then
+
+printf "${RED}/mnt/usb was not mounted yet. You need to mount USB drive first.${NC}
+" >&2
+exit
+else
+
+ 
+ rsync -av /mnt/usb/researchINFO/$GESYSTEMID/research/ /usr/g/research/ >&2
+# rsync -av /mnt/usb/researchINFO/$GESYSTEMID/bin/ /usr/g/bin/ >&2
+# cd / >&2
+# tar xvzf /mnt/usb/ResearchINFO/$GESYSTEMID/researchlinks.tar.gz >&2
+# chown sdc:informix /usr/g/research -R >&2
+# add fix permissions in /usr/g/bin
+# find /usr/g/bin/ -lname '/usr/g/research*' -exec chown sdc:informix {} \; >&2
+# find /usr/g/bin/ -lname '/usr/g/research*' -exec chown -h sdc:informix {} \; >&2
+fi
+
+}
+
+backup_ssh()
+{
+
+mounted_already
+if [ $? != 0 ]; then
+
+printf "${RED}/mnt/usb was not mounted yet. You need to mount USB drive first.${NC}
+" >&2
+exit
+else
+
+rsync -av /etc/ssh/*key* /mnt/usb/researchINFO/$GESYSTEMID/etcssh/ >&2
+rsync -av --no-o --no-g /export/home/sdc/.ssh/ /mnt/usb/researchINFO/$GESYSTEMID/sdcssh/ >&2
+# need to fix permissions for sdc
+fi
+
+}
+
+restore_ssh()
+{
+
+
+mounted_already
+if [ $? != 0 ]; then
+
+printf "${RED}/mnt/usb was not mounted yet. You need to mount USB drive first.${NC}
+" >&2
+exit
+else
+
+rsync -av /mnt/usb/researchINFO/$GESYSTEMID/etcssh/ /etc/ssh/ >&2
+rsync -av /mnt/usb/researchINFO/$GESYSTEMID/sdcssh/ /export/home/sdc/.ssh/ >&2
+# fix permissions and attr
+chown sdc:informix /export/home/sdc/.ssh/ -R >&2
+chmod 600 /export/home/sdc/.ssh/* >&2
+
+fi
+
+}
+
+save_protocols()
+{
+
+mounted_already
+if [ $? != 0 ]; then
+
+printf "${RED}/mnt/usb was not mounted yet. You need to mount USB drive first.${NC}
+" >&2
+exit
+else
+
+CheckProtocolsSize="`du -sm /usr/g/wfprotocols/site | cut -f1`"
+
+USBFreeSpace="`df /mnt/usb | awk '{ print $4 }' | tail -n 1`"
+USBFreePercents="`df /mnt/usb | awk '{ print $5 }' | tail -n 1`"
+USBFreeInMB=$((USBFreeSpace/1024))
+
+printf "$BLUE Protocols direcory size: $RED$CheckProtocolsSize Mbytes $BLUE
+ Free space on USB drive: $RED$USBFreeInMB Mbytes free, %s used
+$NC
+" "$USBFreePercents" >&2
+
+if [ $CheckProtocolsSize -gt $USBFreeInMB ]; then
+
+printf "$RED Not enough space on USB to backup the protocols. Backup failed. $NC
+" >&2
+exit
+
+else
+
+printf "Proceed with backup?(y/n):" >&2
+read UserSelectBackup
+
+if [ $UserSelectBackup == 'y' ]; then
+
+mkdir -p /mnt/usb/ResearchINFO/
+mkdir -p /mnt/usb/ResearchINFO/$GESYSTEMID
+
+tar cvzf /mnt/usb/researchINFO/$GESYSTEMID/protocols.tar.gz /usr/g/wfprotocols/site/adult_* /usr/g/wfprotocols/site/pediatric_* >&2
+fi
+fi
+fi
+}
+
+restore_protocols()
+{
+mounted_already
+if [ $? != 0 ]; then
+
+printf "${RED}/mnt/usb was not mounted yet. You need to mount USB drive first.${NC}
+" >&2
+exit
+else
+
+printf "${RED}This command will delete all existing site protocols and then restore them from USB.  ${NC}
+" >&2
+
+printf "Proceed with restore?(y/n):" >&2
+read UserSelectBackup
+
+if [ $UserSelectBackup == 'y' ]; then
+
+if [ ! -f /mnt/usb/ResearchINFO/$GESYSTEMID/protocols.tar.gz ]; then
+    echo "Protocols backup for that system not found. Make sure you ran <Save site protocols to USB> first" >&2
+    exit
+else
+echo "Found correct site protocols backup, restoring..." >&2
+rm -rf /usr/g/wfprotocols/site/adult_* >&2
+rm -rf /usr/g/wfprotocols/site/pediatric_* >&2
+cd / >&2
+tar xvzf /mnt/usb/researchINFO/$GESYSTEMID/protocols.tar.gz >&2
+chown sdc:informix /usr/g/wfprotocols/site/ -R >&2
+sudo -S -u sdc -i setupProtocols >&2
+
+fi
+fi
+fi
+
+}
+
+safeexit() 
+
+{
+
+mounted_already
+if [ $? == 0 ]; then
+
+printf "${RED}/mnt/usb was not unmounted. Do you want to unmount USB drive before quit?(y/n)${NC}" >&2
+
+read UserSelectUnMount
+
+if [ $UserSelectUnMount == 'y' ]; then 
+umount -l /mnt/usb >&2
+
+if [ $? -eq 0 ]; then
+
+echo Done unmounting, exiting script...>&2
+
+
+fi
+
+fi
+
+fi
+
+}
+
+
+
+small_utilities()
+{
+
+PS3='Please enter your choice (or press Enter to see options): '
+options=("Make a screenshot" "Show coil log" "Show cooling.xml" "Edit mgd_stage file" "Check InstallInSpec" "Protocols used" "Quit")
+select opt in "${options[@]}"
+do
+    case $opt in
+        
+        "Show coil log")
+            
+            less /usr/g/service/log/coilid.log >&2
+
+            ;;
+        
+        "Show cooling.xml")
+	    less /usr/g/service/log/paramdata/cooling.xml >&2
+            ;;
+        "Make a screenshot")
+	    gnome-screenshot >&2
+            ;;
+        "Edit mgd_stage file")
+	    gedit /w/config/mgd_stage >&2
+            ;;
+        "Check InstallInSpec")
+	    sudo -S -u sdc -i /usr/local/bin/install_in_spec >&2
+            ;;
+         "Protocols used")
+	    less /usr/g/service/log/review.out.ar >&2
+            ;;
+        "Quit")
+           
+            break
+            ;;
+        *) echo invalid option;;
+    esac
+done
+
+}
+
+
+######################
+# Set variables
+
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+BLUE='\033[0;34m'
+
+
+GESYSTEMID=$(less /usr/local/bin/install/configure/user_configure | grep uniq)
+
+GESYSTEMID=${GESYSTEMID##*@}
+
+
+
+# check for root user
+
+
+if [ $(id -u) != "0" ]; then
+    printf "$RED You must be the root to run this script. No need to reboot, just do su $NC
+" >&2
+    exit 1
+fi
+
+
+
+
+
+clear >&2
+
+printf "`date` User ${RED}`whoami`${NC} started the script on ${RED}$GESYSTEMID${NC}"$'\n'
+
+
+############ Main menu #################
+PS3='Please enter your choice (or press Enter to see options): '
+options=("Mount USB Drive" "Unmount USB drive" "Backup Research PSDs to USB" "Restore Research PSDs from USB" "Save research links" "Load research links" "Save gesys* log files to USB" "Backup SSH keys to USB" "Restore SSH keys from USB" "Save site protocols to USB" "Restore site prtocols from USB" "Utilities" "Show USB contents" "Quit")
+select opt in "${options[@]}"
+do
+    case $opt in
+        "Mount USB Drive")
+            
+	    $(mount_usb)
+
+            ;;
+        "Unmount USB drive")
+            $(unmount_usb)
+            ;;
+        "Save research links")
+            $(backup_research_links)
+            ;;
+        "Load research links")
+            $(restore_research_links)
+            ;;
+        "Save gesys* log files to USB")
+	    $(copy_ge_logs)
+            ;;
+        "Backup Research PSDs to USB")
+            $(backup_research)
+            ;;
+        "Restore Research PSDs from USB")
+            $(restore_research)
+            ;;
+        "Backup SSH keys to USB")
+            $(backup_ssh)
+            ;;
+        "Restore SSH keys from USB")
+            $(restore_ssh)
+            ;;
+        "Save site protocols to USB")
+            $(save_protocols)
+            ;;
+        "Restore site prtocols from USB")
+            $(restore_protocols)
+            ;;
+        "Show USB contents")
+            sudo -S -u sdc nautilus --browser /mnt/usb >&2
+            ;;
+	"Utilities")
+            $(small_utilities)
+            ;;
+        "Quit")
+            $(safeexit)
+            break
+            ;;
+        *) echo invalid option;;
+    esac
+done
